@@ -557,7 +557,7 @@ GeanyBuildCommand *build_get_menu_item(GeanyBuildSource src, GeanyBuildGroup grp
  **/
 GEANY_API_SYMBOL
 const gchar *build_get_current_menu_item(const GeanyBuildGroup grp, const guint cmd,
-                                         const GeanyBuildCmdEntries fld)
+										 const GeanyBuildCmdEntries fld)
 {
 	GeanyBuildCommand *c;
 	gchar *str = NULL;
@@ -598,7 +598,7 @@ const gchar *build_get_current_menu_item(const GeanyBuildGroup grp, const guint 
  **/
 GEANY_API_SYMBOL
 void build_set_menu_item(const GeanyBuildSource src, const GeanyBuildGroup grp,
-                         const guint cmd, const GeanyBuildCmdEntries fld, const gchar *val)
+						 const guint cmd, const GeanyBuildCmdEntries fld, const gchar *val)
 {
 	GeanyBuildCommand **g;
 
@@ -1142,6 +1142,36 @@ static gchar *build_create_shellscript(const gchar *working_dir, const gchar *cm
 
 typedef void Callback(GtkWidget *w, gpointer u);
 
+static char *geany_pra_start="pragma";
+static char *geany_pra_options[]={"build_command","link_options",0};
+int strmatch(char *s,char *p)
+{
+	int i;
+	for (i=0;(s[i]>0)&&(p[i]>0);i++) {if (s[i]!=p[i]) {break;}}
+	return i;
+}
+static int get_pragma_options(gchar *str,gchar **ans)
+{
+	int i,j,k;
+	for (i=0;str[i]>0;i++)
+	{
+		if (str[i]=='#') {break;}
+	}
+	k=strmatch(str+i+1,geany_pra_start);
+	if (geany_pra_start[k]>0) {return 0;}
+	for (i+=k+1;str[i]>0;i++) {if ((str[i]!=' ')&&(str[i]!='\t')) {break;}}
+	for (j=0;geany_pra_options[j]>0;j++)
+	{
+		k=strmatch(str+i,geany_pra_options[j]);
+		if (geany_pra_options[j][k]==0)
+		{
+			*ans=str+i+k;
+			return j+1;
+		}
+	}
+	return 0;
+}
+
 /* run the command catenating cmd_cat if present */
 static void build_command(GeanyDocument *doc, GeanyBuildGroup grp, guint cmd, gchar *cmd_cat)
 {
@@ -1150,21 +1180,44 @@ static void build_command(GeanyDocument *doc, GeanyBuildGroup grp, guint cmd, gc
 	GeanyBuildCommand *buildcmd = get_build_cmd(doc, grp, cmd, NULL);
 	gchar *cmdstr;
 
+	////////
+	int free_full_command=0;
+	gchar *ps,*tmp;
+	char *ps2;
+	int a,b,c;
+	ps=0;a=0;
+	if ((doc->editor!=NULL)&&(doc->editor->sci!=NULL))
+	{
+		ps=sci_get_line(doc->editor->sci,0);
+		for (a=0;ps[a]>0;a++);
+		for (a-=1;a>0;a--) {if ((ps[a]=='\n')||(ps[a]=='\r')) {ps[a]=0;} else {break;}}
+		a=get_pragma_options(ps,&ps2);
+	}
+	////////
+
 	if (buildcmd == NULL)
 		return;
 
-	cmdstr = buildcmd->command;
-
+	if (a==1) {cmdstr=ps2;}
+	else {cmdstr = buildcmd->command;}
 	if (cmd_cat != NULL)
 	{
 		if (cmdstr != NULL)
 			full_command = g_strconcat(cmdstr, cmd_cat, NULL);
 		else
 			full_command = g_strdup(cmd_cat);
+		free_full_command=1;
 	}
 	else
 		full_command = cmdstr;
 
+	if (a==2)
+	{
+		tmp=full_command;
+		full_command=g_strconcat(tmp,ps2,NULL);
+		if (free_full_command) {g_free(tmp);}
+		free_full_command=1;
+	}
 	dir = build_replace_placeholder(doc, buildcmd->working_dir);
 	subs_command = build_replace_placeholder(doc, full_command);
 	build_info.grp = grp;
@@ -1172,7 +1225,8 @@ static void build_command(GeanyDocument *doc, GeanyBuildGroup grp, guint cmd, gc
 	build_spawn_cmd(doc, subs_command, dir);
 	g_free(subs_command);
 	g_free(dir);
-	if (cmd_cat != NULL)
+	g_free(ps);
+	if (free_full_command)
 		g_free(full_command);
 	build_menu_update(doc);
 	if (build_info.pid)
