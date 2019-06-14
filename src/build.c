@@ -783,8 +783,8 @@ static void build_spawn_cmd(GeanyDocument *doc, const gchar *cmd, const gchar *d
  * set to use a run script, the returned value is a path to the script that runs
  * the command; otherwise the command itself is returned. working_dir is a pointer
  * to the working directory from which the command is executed. Both strings are
- * in the locale encoding. */
-static gchar *prepare_run_cmd(GeanyDocument *doc, gchar **working_dir, guint cmdindex)
+ * in the locale encoding.*/
+static gchar *prepare_run_cmd(GeanyDocument *doc, gchar **working_dir, guint cmdindex, int *silent)
 {
 	GeanyBuildCommand *cmd = NULL;
 	const gchar *cmd_working_dir;
@@ -811,6 +811,18 @@ static gchar *prepare_run_cmd(GeanyDocument *doc, gchar **working_dir, guint cmd
 	}
 
 	cmd_string = utils_get_locale_from_utf8(cmd_string_utf8);
+
+	int i;
+	static const char *sli="--silent";
+	for (i=0;(cmd_string[i]>0)&&(cmd_string[i]==sli[i]);i++);
+	for (;(cmd_string[i]==' ')||(cmd_string[i]=='\t');i++);
+	*silent=i;
+	if (i>0)
+	{
+		utils_free_pointers(2, cmd_string_utf8, working_dir_utf8, NULL);
+		return cmd_string;
+	}
+
 
 #ifdef HAVE_VTE
 	if (vte_info.have_vte && vc->run_in_vte)
@@ -849,20 +861,103 @@ static gchar *prepare_run_cmd(GeanyDocument *doc, gchar **working_dir, guint cmd
 	utils_free_pointers(3, cmd_string_utf8, working_dir_utf8, cmd_string, NULL);
 	return run_cmd;
 }
+static void execute_iofunc(GString *string,GIOCondition condition,gpointer data)
+{
+	if (condition&(G_IO_IN|G_IO_PRI))
+	{
+		msgwin_msg_add(((GPOINTER_TO_INT(data)) ? COLOR_DARK_RED : COLOR_BLACK),-1,NULL,"%s",string->str);
+	}
+}
+static void execute_exit(GPid child_pid,gint status,gpointer data)
+{
+	int option=GPOINTER_TO_INT(data);
+	if (option&1) {ui_progress_bar_stop();}
+	if (SPAWN_WIFEXITED(status))
+	{
+		if (option&1)
+		{
+			msgwin_msg_add(COLOR_BLUE,-1,NULL,"Command finished successfully with %d returned.",SPAWN_WEXITSTATUS(status));
+		}
+	}
+	else
+	{
+		if (option&1)
+		{
+			msgwin_msg_add(COLOR_BLUE,-1,NULL,"Command terminated unexpectly.");
+		}
+		else
+		{
+			geany_debug("Execute process terminated unexpectly.");
+		}
+	}
+}
+// 1--msgwin_msg
+static void execute_spawn_cmd(GeanyDocument *doc,gchar *cmd_str,gchar *dir,int option)
+{
+	GError *error = NULL;
+	gchar *argv[] = { "/bin/sh", "-c", NULL, NULL };
+	gchar *cmd;
 
+	g_return_if_fail(doc == NULL || doc->is_valid);
 
+	if ((doc == NULL || EMPTY(doc->file_name)) && EMPTY(dir))
+	{
+		geany_debug("Failed to run command with no working directory");
+		ui_set_statusbar(TRUE, _("Process failed, no working directory"));
+		return;
+	}
+
+#ifdef G_OS_UNIX
+	argv[2] = cmd_str;
+	cmd = NULL;  /* under Unix, use argv to start cmd via sh for compatibility */
+#else
+	/* Expand environment variables like %blah%. */
+	argv[0] = NULL;  /* under Windows, run cmd directly */
+	cmd = cmd_str;
+#endif
+
+	if (option&1)
+	{
+		msgwin_clear_tab(MSG_MESSAGE);
+		msgwin_msg_add(COLOR_BLUE,-1,NULL,"Execute: -%s-",cmd_str);
+		msgwin_msg_add(COLOR_BLUE,-1,NULL,"Working Directory: -%s-",dir);
+		gtk_notebook_set_current_page(GTK_NOTEBOOK(msgwindow.notebook), MSG_MESSAGE);
+	}
+	if (spawn_with_callbacks(dir, cmd, argv, NULL, 0, NULL, NULL, (option&1)?execute_iofunc:0,
+		(option&1)?GINT_TO_POINTER(0):0, 0, (option&1)?execute_iofunc:0, (option&1)?GINT_TO_POINTER(1):0, 0, execute_exit, GINT_TO_POINTER(option),
+		NULL, &error))
+	{
+		if (option&1) {ui_progress_bar_start("Running...");}
+		geany_debug("Execute: -%s-",cmd_str);
+	}
+	else
+	{
+		if (option&1) {msgwin_msg_add(COLOR_BLUE,-1,NULL,"Execute failed -%s- !!!\n",cmd_str);}
+		geany_debug("build command spawning failed: %s", error->message);
+		ui_set_statusbar(TRUE, _("Process failed (%s)"), error->message);
+		g_error_free(error);
+	}
+}
 static void build_run_cmd(GeanyDocument *doc, guint cmdindex)
 {
 	gchar *working_dir;
 	gchar *run_cmd = NULL;
+	int silent;
 
 	if (! DOC_VALID(doc) || doc->file_name == NULL)
 		return;
 
-	run_cmd = prepare_run_cmd(doc, &working_dir, cmdindex);
+	run_cmd = prepare_run_cmd(doc, &working_dir, cmdindex ,&silent);
 	if (run_cmd == NULL)
 		return;
 
+	if (silent>0)
+	{
+		execute_spawn_cmd(doc,run_cmd+silent,working_dir,0);
+		g_free(working_dir);
+		g_free(run_cmd);
+		return;
+	}
 	run_info[cmdindex].file_type_id = doc->file_type->id;
 
 #ifdef HAVE_VTE
@@ -939,8 +1034,8 @@ static void build_run_cmd(GeanyDocument *doc, guint cmdindex)
 #endif
 			run_info[cmdindex].pid = (GPid) 0;
 		}
+		g_free(locale_term_cmd);
 	}
-
 	g_free(working_dir);
 	g_free(run_cmd);
 }
@@ -1142,7 +1237,7 @@ static gchar *build_create_shellscript(const gchar *working_dir, const gchar *cm
 
 typedef void Callback(GtkWidget *w, gpointer u);
 
-static char *geany_pra_start="pragma";
+static char *geany_pra_start="pragma";//
 static char *geany_pra_options[]={"build_command","link_options",0};
 int strmatch(char *s,char *p)
 {
@@ -1152,6 +1247,7 @@ int strmatch(char *s,char *p)
 }
 static int get_pragma_options(gchar *str,gchar **ans)
 {
+	typeof(str) tmp;
 	int i,j,k;
 	for (i=0;str[i]>0;i++)
 	{
@@ -1248,7 +1344,13 @@ static void on_make_custom_input_response(const gchar *input, gpointer data)
 					build_info.custom_target);
 }
 
-
+/* Define execute command parameters:
+ * --silent : execute this command with no terminal, no messages, no progress bar.
+ * --lock : this command is not re-entrant.
+ * --no-terminal
+ * --no-progress-bar
+ * --no-messages
+ */
 static void on_build_menu_item(GtkWidget *w, gpointer user_data)
 {
 	GeanyDocument *doc = document_get_current();

@@ -676,7 +676,7 @@ static gboolean spawn_async_with_pipes(const gchar *working_directory, const gch
 	g_free(w_command);
 
 	return success;
-#else  /* G_OS_WIN32 */
+#else  /* not G_OS_WIN32 */
 	int cl_argc;
 	char **full_argv;
 	gboolean spawned;
@@ -787,7 +787,7 @@ static gboolean spawn_async_with_pipes(const gchar *working_directory, const gch
 	}
 
 	return spawned;
-#endif  /* G_OS_WIN32 */
+#endif  /* not G_OS_WIN32 */
 }
 
 
