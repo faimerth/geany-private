@@ -634,7 +634,7 @@ void configuration_save(void)
 	save_recent_files(config, ui_prefs.recent_queue, "recent_files");
 	save_recent_files(config, ui_prefs.recent_projects_queue, "recent_projects");
 
-	if (cl_options.load_session)
+	if ((cl_options.load_session)&&(!cl_options.new_instance))
 		configuration_save_session_files(config);
 #ifdef HAVE_VTE
 	else if (vte_info.have_vte)
@@ -1099,7 +1099,7 @@ void configuration_save_default_session(void)
 
 	g_key_file_load_from_file(config, configfile, G_KEY_FILE_NONE, NULL);
 
-	if (cl_options.load_session)
+	if ((cl_options.load_session)&&(!cl_options.new_instance))
 		configuration_save_session_files(config);
 
 	/* write the file */
